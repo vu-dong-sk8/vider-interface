@@ -6,8 +6,10 @@ import heroBg from "@/assets/hero-bg.jpg";
 
 export function ViderHero() {
   return (
-    <section className="relative min-h-screen flex items-center justify-center overflow-hidden vider-gradient">
-      {/* Diagonal stripe pattern overlay */}
+    <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
+      {/* Background image */}
+      <img src={heroBg} alt="" className="absolute inset-0 w-full h-full object-cover" width={1920} height={1080} />
+      <div className="absolute inset-0 bg-black/40" />
       <div className="absolute inset-0 vider-stripe opacity-60" />
 
       {/* Accent line decorations */}
