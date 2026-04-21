@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Zap } from "lucide-react";
 import { motion } from "framer-motion";
+import heroBg from "@/assets/hero-bg.jpg";
 
 export function ViderHero() {
   return (
