@@ -2,9 +2,7 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 psycopg2-binary
-torch
-transformers
-accelerate
-sentencepiece
+llama-cpp-python
+huggingface-hub
 python-dotenv
 pydantic

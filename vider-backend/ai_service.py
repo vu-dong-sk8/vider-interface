@@ -1,15 +1,13 @@
 """
-VIDER AI Service — Local LLM inference via HuggingFace Transformers + PyTorch.
+VIDER AI Service — Local LLM inference via llama-cpp-python (GGUF models).
 
-Model  : Qwen/Qwen2.5-1.5B-Instruct  (configurable via LLM_MODEL env)
-Device : CUDA (auto) when available, else CPU
-Dtype  : bfloat16 on CUDA, float32 on CPU
+Model  : Qwen2.5-3B-Instruct-GGUF  Q4_K_M  (configurable via env vars)
+Engine : llama.cpp  — optimised C/C++ inference, runs great on CPU
+RAM    : ~2 GB  (vs ~6 GB for the same model in float32 via Transformers)
 """
 
 import os
 import logging
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
 
 logger = logging.getLogger(__name__)
 
@@ -19,35 +17,36 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = (
     "Bạn là VIDER, một trợ lý AI thông minh, thân thiện và chuyên nghiệp. "
     "Hãy trả lời bằng tiếng Việt trừ khi người dùng yêu cầu ngôn ngữ khác. "
-    "Trả lời ngắn gọn, chính xác và hữu ích."
+    "Trả lời ngắn gọn, chính xác và hữu ích. "
+    "Nếu bạn không biết câu trả lời, hãy nói thật, tuyệt đối không được bịa."
 )
 
 
 class LocalLLM:
-    """Lightweight local LLM wrapper.
+    """llama.cpp–backed LLM wrapper.
 
-    Key design decisions
-    --------------------
-    * Uses ``model.generate()`` directly instead of ``pipeline`` to avoid
-      the device‑conflict that occurs when ``device_map="auto"`` distributes
-      the model across devices while ``pipeline(device=0)`` expects a single
-      device.
-    * Applies the model's **chat template** (``tokenizer.apply_chat_template``)
-      so Instruct-tuned models (Qwen, Phi, …) produce high‑quality output.
-    * Model is loaded **lazily** on first call to ``generate_response()``,
-      not at import time, so the server starts instantly.
+    Key advantages over the old Transformers backend
+    -------------------------------------------------
+    * Uses **GGUF** quantised weights (4-bit) — dramatically lower RAM.
+    * Pure C/C++ inference — faster on CPU than PyTorch.
+    * Built-in chat-template support via ``create_chat_completion()``.
+    * Model is downloaded and cached automatically from HuggingFace Hub.
     """
 
-    def __init__(self, model_name: str | None = None):
-        self.model_name = model_name or os.getenv(
-            "LLM_MODEL", "Qwen/Qwen2.5-1.5B-Instruct"
+    def __init__(
+        self,
+        repo_id: str | None = None,
+        filename: str | None = None,
+    ):
+        self.repo_id = repo_id or os.getenv(
+            "LLM_REPO", "Qwen/Qwen2.5-3B-Instruct-GGUF"
         )
-        self.has_cuda = torch.cuda.is_available()
-        self.torch_dtype = torch.bfloat16 if self.has_cuda else torch.float32
-        self.device = "cuda" if self.has_cuda else "cpu"
+        self.filename = filename or os.getenv(
+            "LLM_FILE", "qwen2.5-3b-instruct-q4_k_m.gguf"
+        )
+        self.n_ctx = int(os.getenv("LLM_CTX", "4096"))
 
         # Lazy — populated by _load_model()
-        self._tokenizer = None
         self._model = None
         self._loaded = False
 
@@ -58,41 +57,34 @@ class LocalLLM:
         if self._loaded:
             return
 
-        logger.info("Loading model '%s' (dtype=%s, device=%s) …",
-                     self.model_name, self.torch_dtype, self.device)
+        from llama_cpp import Llama
 
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name,
-            use_fast=True,
-            trust_remote_code=True,
+        n_threads = os.cpu_count() or 4
+        logger.info(
+            "Loading GGUF model repo='%s' file='%s' (n_ctx=%d, threads=%d) …",
+            self.repo_id, self.filename, self.n_ctx, n_threads,
         )
 
-        # Ensure pad_token exists (some models omit it)
-        if self._tokenizer.pad_token is None:
-            self._tokenizer.pad_token = self._tokenizer.eos_token
+        self._model = Llama.from_pretrained(
+            repo_id=self.repo_id,
+            filename=self.filename,
+            n_ctx=self.n_ctx,
+            n_threads=n_threads,
+            verbose=False,
+        )
 
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_name,
-            dtype=self.torch_dtype,
-            trust_remote_code=True,
-        ).to(self.device)
-        self._model.eval()
-
-        logger.info("Model loaded successfully.")
+        logger.info("GGUF model loaded successfully.")
         self._loaded = True
 
     # ------------------------------------------------------------------
-    # Chat‑template prompt builder
+    # Chat-template prompt builder
     # ------------------------------------------------------------------
     def _build_messages(self, chat_history: list[dict]) -> list[dict]:
-        """Convert raw chat_history to the messages list expected by the
-        chat template, prepending the system prompt."""
+        """Prepend the system prompt to the raw chat history."""
         messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
         for msg in chat_history:
             role = msg.get("role", "user")
-            # Normalise role names — the frontend uses "bot" while the
-            # model expects "assistant".
             if role not in ("user", "assistant", "system"):
                 role = "assistant"
             messages.append({"role": role, "content": msg.get("content", "")})
@@ -120,7 +112,7 @@ class LocalLLM:
         temperature : float
             Sampling temperature (0 = greedy).
         top_p : float
-            Nucleus‑sampling probability mass.
+            Nucleus-sampling probability mass.
 
         Returns
         -------
@@ -133,34 +125,15 @@ class LocalLLM:
 
         messages = self._build_messages(chat_history)
 
-        # Use the tokenizer's built-in chat template (works for Qwen, Phi, …)
-        tokenized = self._tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            return_tensors="pt",
+        # llama-cpp-python handles chat templates internally
+        response = self._model.create_chat_completion(
+            messages=messages,
+            max_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
         )
 
-        # Newer transformers return a BatchEncoding; older ones return a tensor.
-        if hasattr(tokenized, "input_ids"):
-            input_ids = tokenized["input_ids"].to(self._model.device)
-        else:
-            input_ids = tokenized.to(self._model.device)
-
-        # Generate
-        with torch.no_grad():
-            output_ids = self._model.generate(
-                input_ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=temperature > 0,
-                temperature=temperature if temperature > 0 else None,
-                top_p=top_p if temperature > 0 else None,
-                pad_token_id=self._tokenizer.pad_token_id,
-            )
-
-        # Decode only the *new* tokens (strip the prompt)
-        new_tokens = output_ids[0, input_ids.shape[1]:]
-        reply = self._tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-
+        reply = response["choices"][0]["message"]["content"].strip()
         return reply
 
 
