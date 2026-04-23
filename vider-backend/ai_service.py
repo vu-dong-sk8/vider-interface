@@ -106,7 +106,7 @@ class LocalLLM:
         self,
         chat_history: list[dict],
         max_new_tokens: int = 512,
-        temperature: float = 0.7,
+        temperature: float = 0.1,
         top_p: float = 0.9,
     ) -> str:
         """Generate an assistant reply from *chat_history*.
