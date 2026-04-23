@@ -4,5 +4,6 @@ sqlalchemy
 psycopg2-binary
 llama-cpp-python
 huggingface-hub
+tavily-python
 python-dotenv
 pydantic
