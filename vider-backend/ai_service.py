@@ -73,11 +73,9 @@ class LocalLLM:
 
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
-            device_map="auto",
             torch_dtype=self.torch_dtype,
-            low_cpu_mem_usage=True,
             trust_remote_code=True,
-        )
+        ).to(self.device)
         self._model.eval()
 
         logger.info("Model loaded successfully.")
