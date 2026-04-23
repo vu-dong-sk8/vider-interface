@@ -73,7 +73,7 @@ class LocalLLM:
 
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
-            torch_dtype=self.torch_dtype,
+            dtype=self.torch_dtype,
             trust_remote_code=True,
         ).to(self.device)
         self._model.eval()
@@ -134,11 +134,17 @@ class LocalLLM:
         messages = self._build_messages(chat_history)
 
         # Use the tokenizer's built-in chat template (works for Qwen, Phi, …)
-        input_ids = self._tokenizer.apply_chat_template(
+        tokenized = self._tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
             return_tensors="pt",
-        ).to(self._model.device)
+        )
+
+        # Newer transformers return a BatchEncoding; older ones return a tensor.
+        if hasattr(tokenized, "input_ids"):
+            input_ids = tokenized["input_ids"].to(self._model.device)
+        else:
+            input_ids = tokenized.to(self._model.device)
 
         # Generate
         with torch.no_grad():
